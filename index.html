@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GYM SYSTEM</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- شريط التنقل الجانبي -->
+<aside class="sidebar">
+    <div class="logo">GYM SYSTEM</div>
+    <nav>
+        <a href="#" class="active" data-page="home">الرئيسية</a>
+        <a href="#" data-page="members">المشتركين</a>
+        <a href="#" data-page="sessions">الحصص</a>
+        <a href="#" data-page="revenues">الإيرادات</a>
+        <a href="#" data-page="expenses">المصروفات</a>
+        <a href="#" data-page="reports">التقارير</a>
+    </nav>
+    <div class="developer-credit">
+        <img src="ziadwebdesigner-logo.svg" alt="Ziad Web Designer logo">
+        <span>Developed by</span>
+        <strong>ziadwebdesigner</strong>
+    </div>
+</aside>
+
+<!-- المحتوى الرئيسي المتغير حسب الصفحة المحددة -->
+<main class="main-content" id="app"></main>
+
+<!-- مكتبة SheetJS لتصدير ملفات Excel -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- ربط ملف الجافاسكريبت للتشغيل -->
+<script src="script.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
+  import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-analytics.js";
+  import { getFirestore, collection, addDoc, getDocs, doc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyC2QfxBELMCDVzMcaMf3FzspZu64cHlJJs",
+    authDomain: "gym-system-d4762.firebaseapp.com",
+    projectId: "gym-system-d4762",
+    storageBucket: "gym-system-d4762.firebasestorage.app",
+    messagingSenderId: "267378935895",
+    appId: "1:267378935895:web:649734d0cc01e1924f3b12",
+    measurementId: "G-VLX2PV8G3F"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const analytics = getAnalytics(app);
+  const db = getFirestore(app);
+
+  // حفظ الأدوات في المتصفح عشان ملف script.js يقدر يقرأها براحته
+  window.db = db;
+  window.collection = collection;
+  window.addDoc = addDoc;
+  window.getDocs = getDocs;
+  window.doc = doc;
+  window.setDoc = setDoc;
+  window.deleteDoc = deleteDoc;
+  
+  console.log("تم اتصال Firebase بنجاح يا بطل!");
+</script>
+</body>
+</html>
