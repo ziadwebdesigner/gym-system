@@ -4,6 +4,7 @@
 let members = [];
 let sessions = [];
 let expenses = [];
+let sales = [];
 
 const app = document.getElementById("app");
 const links = document.querySelectorAll(".sidebar a");
@@ -34,6 +35,11 @@ function initFirebaseListeners() {
     getDocs(collection(db, "gymExpenses")).then((snapshot) => {
         expenses = snapshot.docs.map(doc => ({ ...doc.data(), firestoreId: doc.id }));
     }).catch(err => console.error("خطأ في جلب المصروفات:", err));
+
+    // جلب المبيعات
+    getDocs(collection(db, "gymSales")).then((snapshot) => {
+        sales = snapshot.docs.map(doc => ({ ...doc.data(), firestoreId: doc.id }));
+    }).catch(err => console.error("خطأ في جلب المبيعات:", err));
 }
 
 // دالة حفظ العناصر في Firestore
@@ -89,6 +95,7 @@ links.forEach(link => {
         if (page === "sessions") showSessions();
         if (page === "revenues") showRevenues();
         if (page === "expenses") showExpenses();
+        if (page === "sales") showSales();
         if (page === "reports") showReports();
     };
 });
@@ -1236,18 +1243,187 @@ async function deleteExpense(id) {
 
 
 // ==========================================
-// قسم إدارة الإيرادات وصافي الأرباح (مقسم بالأيام)
+// دوال مساعدة للتواريخ (الشهور)
 // ==========================================
-function showRevenues() {
+const ARABIC_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
+
+function getCurrentMonthKey() {
+    const n = new Date();
+    return n.getFullYear() + "-" + String(n.getMonth() + 1).padStart(2, "0");
+}
+
+// تحويل تاريخ بصيغة "05 / 10 / 2026" إلى مفتاح شهر "2026-10"
+function getMonthKey(dateStr) {
+    const parts = String(dateStr || "").split("/").map(p => p.trim());
+    if (parts.length !== 3 || !parts[1] || !parts[2]) return "";
+    return parts[2] + "-" + parts[1].padStart(2, "0");
+}
+
+function getDateSortValue(dateStr) {
+    const parts = String(dateStr || "").split("/").map(p => Number(p.trim()));
+    if (parts.length !== 3 || parts.some(isNaN)) return 0;
+    return parts[2] * 10000 + parts[1] * 100 + parts[0];
+}
+
+function getMonthLabel(key) {
+    const [y, m] = key.split("-");
+    return (ARABIC_MONTHS[Number(m) - 1] || m) + " " + y;
+}
+
+function escapeHTML(value) {
+    return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+
+// ==========================================
+// قسم المبيعات (بيع منتجات من الجيم)
+// ==========================================
+function getSaleTotal(item) {
+    return Number(item.total) || ((Number(item.price) || 0) * (Number(item.qty) || 1));
+}
+
+function showSales() {
     clearInterval(sessionRefreshTimer);
+
+    const today = formatDate(new Date());
+    const monthKey = getCurrentMonthKey();
+    const todayTotal = sales.filter(s => s.date === today).reduce((sum, s) => sum + getSaleTotal(s), 0);
+    const monthTotal = sales.filter(s => getMonthKey(s.date) === monthKey).reduce((sum, s) => sum + getSaleTotal(s), 0);
+
+    app.innerHTML = `
+        ${bannerHTML()}
+        <header class="topbar">
+            <div>
+                <h1>المبيعات</h1>
+                <p>تسجيل بيع أي منتج من الجيم (مياه، مكملات، مناشف... إلخ)</p>
+            </div>
+        </header>
+
+        <section class="stats" style="grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 15px;">
+            <div class="stat-card" style="background:#f0fdf4; border:1px solid #bbf7d0;">
+                <span style="color:#166534;">مبيعات اليوم</span>
+                <strong style="color:#16a34a; font-size:16px;">${todayTotal} جنيه</strong>
+            </div>
+            <div class="stat-card" style="background:#f8fafc; border:1px solid #e2e8f0;">
+                <span style="color:#475569;">مبيعات ${getMonthLabel(monthKey)}</span>
+                <strong style="color:#0284c7; font-size:16px;">${monthTotal} جنيه</strong>
+            </div>
+        </section>
+
+        <section class="recent member-form">
+            <div style="background:#f1f5f9; border:1px solid #e2e8f0; padding:10px 15px; border-radius:8px; margin-bottom:10px;">
+                📅 تاريخ البيع: <strong>${today}</strong> <span style="color:#64748b; font-size:12px;">(تلقائي من الجهاز)</span>
+            </div>
+
+            <label>اسم الصنف</label>
+            <input id="saleName" type="text" placeholder="مثال: مياه / بروتين / منشفة">
+
+            <label>السعر (للوحدة بالجنيه)</label>
+            <input id="salePrice" type="number" min="1" inputmode="decimal">
+
+            <label>الكمية</label>
+            <input id="saleQty" type="number" min="1" value="1" inputmode="numeric">
+
+            <div id="saleTotalPreview" style="font-weight:bold; color:#16a34a; margin:8px 0;">الإجمالي: 0 جنيه</div>
+
+            <button type="button" id="saveSale">تسجيل البيع</button>
+        </section>
+
+        <section class="recent">
+            <h2>سجل المبيعات</h2>
+            <div id="salesList">${getSalesHTML()}</div>
+        </section>
+    `;
+
+    const priceInput = document.getElementById("salePrice");
+    const qtyInput = document.getElementById("saleQty");
+    const updateTotal = () => {
+        const total = (Number(priceInput.value) || 0) * (Math.floor(Number(qtyInput.value)) || 0);
+        document.getElementById("saleTotalPreview").textContent = "الإجمالي: " + total + " جنيه";
+    };
+    priceInput.oninput = updateTotal;
+    qtyInput.oninput = updateTotal;
+
+    document.getElementById("saveSale").onclick = function() {
+        const name = document.getElementById("saleName").value.trim();
+        const price = Number(priceInput.value);
+        const qty = Math.floor(Number(qtyInput.value));
+
+        if (!name || !(price > 0) || !(qty >= 1)) {
+            alert("من فضلك أدخل اسم الصنف والسعر والكمية بشكل صحيح");
+            return;
+        }
+
+        // التاريخ بياخد من الجهاز لحظة الحفظ ومفيش أي طريقة لتغييره من الشاشة
+        const now = new Date();
+        const newSale = {
+            id: Date.now(),
+            name,
+            price,
+            qty,
+            total: price * qty,
+            date: formatDate(now),
+            dateISO: now.toISOString()
+        };
+
+        sales.push(newSale);
+        saveToFirestore("gymSales", newSale);
+        showSales();
+    };
+}
+
+function getSalesHTML() {
+    if (!sales.length) return `<div class="empty">لا توجد مبيعات مسجلة بعد</div>`;
+
+    const list = [...sales].sort((a, b) => (b.id || 0) - (a.id || 0));
+
+    return `
+        <div style="display:flex; flex-direction:column; gap:8px;">
+            ${list.map(item => `
+                <div style="display:flex; justify-content:space-between; align-items:center; background:#fff; padding:12px 15px; border-radius:8px; border:1px solid #e5e7eb;">
+                    <div>
+                        <strong style="font-size:14px; color:#1f2937;">${escapeHTML(item.name)}</strong>
+                        <div style="font-size:12px; color:#6b7280; margin-top:2px;">${item.qty} × ${item.price} جنيه | التاريخ: ${item.date}</div>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:15px;">
+                        <strong style="color:#16a34a; font-size:15px;">+ ${getSaleTotal(item)} جنيه</strong>
+                        <button type="button" onclick="deleteSale(${item.id})" style="background:#fee2e2; color:#dc2626; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-weight:bold;">حذف</button>
+                    </div>
+                </div>
+            `).join("")}
+        </div>
+    `;
+}
+
+async function deleteSale(id) {
+    if (!confirm("هل تريد حذف عملية البيع دي؟")) return;
+    const sale = sales.find(s => s.id === id);
+    if (!await deleteFromFirestore("gymSales", sale)) return;
+    sales = sales.filter(s => s.id !== id);
+    showSales();
+}
+
+
+// ==========================================
+// قسم إدارة الإيرادات وصافي الأرباح (شهر بشهر)
+// ==========================================
+function showRevenues(selectedMonth) {
+    clearInterval(sessionRefreshTimer);
+
+    const monthKey = (typeof selectedMonth === "string" && selectedMonth) ? selectedMonth : getCurrentMonthKey();
+    const inPeriod = (dateStr) => monthKey === "all" || getMonthKey(dateStr) === monthKey;
+    const monthsSet = new Set([getCurrentMonthKey()]);
 
     let allTransactions = [];
     let totalSubscriptionsIncome = 0;
     let totalSessionsIncome = 0;
+    let totalSalesIncome = 0;
 
     members.forEach(member => {
         if (Array.isArray(member.history)) {
             member.history.forEach(item => {
+                const key = getMonthKey(item.date);
+                if (key) monthsSet.add(key);
+                if (!inPeriod(item.date)) return;
                 const price = Number(item.paidAmount ?? item.price) || 0;
                 totalSubscriptionsIncome += price;
                 allTransactions.push({
@@ -1262,6 +1438,9 @@ function showRevenues() {
     });
 
     sessions.forEach(session => {
+        const key = getMonthKey(session.date);
+        if (key) monthsSet.add(key);
+        if (!inPeriod(session.date)) return;
         const price = Number(session.price) || 0;
         totalSessionsIncome += price;
         allTransactions.push({
@@ -1273,7 +1452,25 @@ function showRevenues() {
         });
     });
 
+    sales.forEach(sale => {
+        const key = getMonthKey(sale.date);
+        if (key) monthsSet.add(key);
+        if (!inPeriod(sale.date)) return;
+        const price = getSaleTotal(sale);
+        totalSalesIncome += price;
+        allTransactions.push({
+            title: `بيع: ${sale.name}${Number(sale.qty) > 1 ? " × " + sale.qty : ""}`,
+            category: "مبيعات",
+            price: price,
+            type: "income",
+            date: sale.date
+        });
+    });
+
     expenses.forEach(exp => {
+        const key = getMonthKey(exp.date);
+        if (key) monthsSet.add(key);
+        if (!inPeriod(exp.date)) return;
         allTransactions.push({
             title: exp.title,
             category: `مصروف (${exp.category})`,
@@ -1283,7 +1480,7 @@ function showRevenues() {
         });
     });
 
-    let totalIncome = totalSubscriptionsIncome + totalSessionsIncome;
+    let totalIncome = totalSubscriptionsIncome + totalSessionsIncome + totalSalesIncome;
     let totalExpense = allTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + t.price, 0);
     let netProfit = totalIncome - totalExpense;
     const totalOutstanding = getTotalOutstanding();
@@ -1297,15 +1494,24 @@ function showRevenues() {
         }
         groupedByDate[dateKey].push(item);
     });
+    // الأيام من الأحدث للأقدم
+    const sortedDates = Object.keys(groupedByDate).sort((a, b) => getDateSortValue(b) - getDateSortValue(a));
+
+    const monthOptions = [...monthsSet].sort().reverse();
+    const periodLabel = monthKey === "all" ? "كل الفترات" : getMonthLabel(monthKey);
 
     app.innerHTML = `
         ${bannerHTML()}
         <header class="topbar">
             <div>
-                <h1>سجل الإيرادات والأرباح مقسم بالأيام</h1>
+                <h1>سجل الإيرادات والأرباح - ${periodLabel}</h1>
                 <p>متابعة تفصيلية للإيرادات والمصروفات وصافي الأرباح موزعة يوم بيوم</p>
             </div>
-            <div>
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <select id="revenueMonth" onchange="showRevenues(this.value)" style="padding:8px 12px; border-radius:6px; border:1px solid #cbd5e1; font-weight:bold; background:#fff;">
+                    <option value="all" ${monthKey === "all" ? "selected" : ""}>كل الفترات</option>
+                    ${monthOptions.map(k => `<option value="${k}" ${k === monthKey ? "selected" : ""}>${getMonthLabel(k)}</option>`).join("")}
+                </select>
                 <button onclick="printReport()" style="background:#2563eb; color:white; border:none; padding:8px 14px; border-radius:6px; cursor:pointer; font-weight:bold;">🖨️ طباعة التقرير</button>
             </div>
         </header>
@@ -1319,6 +1525,10 @@ function showRevenues() {
                 <span style="color:#475569;">إيرادات الحصص</span>
                 <strong style="color:#0284c7; font-size:16px;">+ ${totalSessionsIncome} جنيه</strong>
             </div>
+            <div class="stat-card" style="background:#f8fafc; border:1px solid #e2e8f0;">
+                <span style="color:#475569;">إيرادات المبيعات</span>
+                <strong style="color:#0284c7; font-size:16px;">+ ${totalSalesIncome} جنيه</strong>
+            </div>
             <div class="stat-card" style="background:#fef2f2; border:1px solid #fecaca;">
                 <span style="color:#991b1b;">إجمالي المصروفات</span>
                 <strong style="color:#dc2626; font-size:16px;">- ${totalExpense} جنيه</strong>
@@ -1328,15 +1538,15 @@ function showRevenues() {
                 <strong style="color:#16a34a; font-size:18px;">${netProfit} جنيه</strong>
             </div>
             <div class="stat-card" style="background:#fff7ed; border:1px solid #fed7aa;">
-                <span style="color:#9a3412;">مبالغ متبقية (${outstandingMembersCount})</span>
+                <span style="color:#9a3412;">مبالغ متبقية حالياً (${outstandingMembersCount})</span>
                 <strong style="color:#ea580c; font-size:16px;">${totalOutstanding} جنيه</strong>
             </div>
         </section>
 
         <section class="recent">
-            <h2>الحركة المالية موزعة ومجمعة حسب الأيام</h2>
+            <h2>الحركة المالية - ${periodLabel}</h2>
             <div style="display:flex; flex-direction:column; gap:15px; margin-top:12px;">
-                ${Object.keys(groupedByDate).length ? Object.keys(groupedByDate).map(date => {
+                ${sortedDates.length ? sortedDates.map(date => {
                     let dayTransactions = groupedByDate[date];
                     let dayIncome = dayTransactions.filter(t => t.type === 'income').reduce((s, t) => s + t.price, 0);
                     let dayExpense = dayTransactions.filter(t => t.type === 'expense').reduce((s, t) => s + t.price, 0);
@@ -1352,13 +1562,13 @@ function showRevenues() {
                                     <strong style="color:${dayNet >= 0 ? '#16a34a' : '#dc2626'};">صافي اليوم: ${dayNet} ج</strong>
                                 </div>
                             </div>
-                            
+
                             <div style="display:flex; flex-direction:column; gap:6px;">
                                 ${dayTransactions.map(item => `
                                     <div style="display:flex; justify-content:space-between; align-items:center; background:#fff; padding:10px 12px; border-radius:6px; border:1px solid #f3f4f6;">
                                         <div>
-                                            <strong style="font-size:13px; color:#374151;">${item.title}</strong>
-                                            <div style="font-size:11px; color:#6b7280; margin-top:2px;">التصنيف: ${item.category}</div>
+                                            <strong style="font-size:13px; color:#374151;">${escapeHTML(item.title)}</strong>
+                                            <div style="font-size:11px; color:#6b7280; margin-top:2px;">التصنيف: ${escapeHTML(item.category)}</div>
                                         </div>
                                         <div>
                                             <strong style="color: ${item.type === 'income' ? '#16a34a' : '#dc2626'}; font-size:14px;">
@@ -1370,7 +1580,7 @@ function showRevenues() {
                             </div>
                         </div>
                     `;
-                }).join("") : `<div class="empty">لا توجد حركات مالية مسجلة بعد</div>`}
+                }).join("") : `<div class="empty">لا توجد حركات مالية مسجلة في ${periodLabel}</div>`}
             </div>
         </section>
     `;
@@ -1397,7 +1607,9 @@ function showReports() {
     });
     let sessTotalRev = 0;
     sessions.forEach(s => sessTotalRev += (Number(s.price) || 0));
-    const grandTotalRev = subTotalRev + sessTotalRev;
+    let salesTotalRev = 0;
+    sales.forEach(s => salesTotalRev += getSaleTotal(s));
+    const grandTotalRev = subTotalRev + sessTotalRev + salesTotalRev;
     const totalOutstanding = getTotalOutstanding();
     const outstandingMembersCount = getOutstandingMembers().length;
 
@@ -1434,6 +1646,7 @@ function showReports() {
                 <div style="background:#f7f8fa; padding:15px; border-radius:10px; border:1px solid #e1e5ea;">
                     <h3 style="font-size:16px; margin-bottom:12px; border-bottom:2px solid #198754; padding-bottom:8px; color:#198754;">💰 تقرير الأموال والأرباح الحقيقية</h3>
                     <div style="display: flex; flex-direction: column; gap: 10px; font-size: 13px;">
+                        <div style="display:flex; justify-content:space-between; background:#fff; padding:8px; border-radius:6px;"><span>منها مبيعات المنتجات:</span> <strong>${salesTotalRev} جنيه</strong></div>
                         <div style="display:flex; justify-content:space-between; background:#fff; padding:8px; border-radius:6px;"><span>إجمالي الإيرادات:</span> <strong>${grandTotalRev} جنيه</strong></div>
                         <div style="display:flex; justify-content:space-between; background:#fff7ed; padding:8px; border-radius:6px; border:1px solid #fed7aa;"><span>إجمالي المبالغ المتبقية (${outstandingMembersCount} مشترك):</span> <strong style="color:#ea580c;">${totalOutstanding} جنيه</strong></div>
                         <div style="display:flex; justify-content:space-between; background:#fff; padding:8px; border-radius:6px;"><span>إجمالي المصروفات:</span> <strong style="color:#dc2626;">- ${totalExp} جنيه</strong></div>
@@ -1479,6 +1692,16 @@ function exportToExcel() {
         }));
         const wsExp = XLSX.utils.json_to_sheet(expData);
         XLSX.utils.book_append_sheet(wb, wsExp, "المصروفات");
+
+        const salesData = sales.map(s => ({
+            "الصنف": s.name,
+            "السعر": s.price,
+            "الكمية": s.qty,
+            "الإجمالي": getSaleTotal(s),
+            "التاريخ": s.date
+        }));
+        const wsSales = XLSX.utils.json_to_sheet(salesData);
+        XLSX.utils.book_append_sheet(wb, wsSales, "المبيعات");
 
         XLSX.writeFile(wb, "Gym_System_Report.xlsx");
     } catch (err) {
